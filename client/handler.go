@@ -62,11 +62,14 @@ func NewHandler(r InternalRegistry) *Handler {
 
 func (h *Handler) SetRoutes(admin *x.RouterAdmin, public *x.RouterPublic) {
 	admin.GET(ClientsHandlerPath, h.List)
+
 	admin.POST(ClientsHandlerPath, h.Create)
 	admin.GET(ClientsHandlerPath+"/:id", h.Get)
 	admin.PUT(ClientsHandlerPath+"/:id", h.Update)
 	admin.PATCH(ClientsHandlerPath+"/:id", h.Patch)
 	admin.DELETE(ClientsHandlerPath+"/:id", h.Delete)
+
+	admin.GET(ClientsHandlerPath+"/:id/secret", h.GetClientSecret)
 
 	if h.r.Config().PublicAllowDynamicRegistration() {
 		public.POST(DynClientsHandlerPath, h.CreateDynamicRegistration)
@@ -188,10 +191,19 @@ func (h *Handler) CreateClient(r *http.Request, validator func(*Client) error, i
 	if err := h.r.ClientManager().CreateClient(r.Context(), &c); err != nil {
 		return nil, err
 	}
+
+	cr := ClientSecret{
+		ClientID:              c.OutfacingID,
+		ClientSecretPlaintext: secret,
+	}
+	if err := h.r.ClientManager().CreateClientSecret(r.Context(), &cr); err != nil {
+		x.LogError(r, err, nil)
+	}
 	c.Secret = ""
 	if !c.IsPublic() {
 		c.Secret = secret
 	}
+
 	return &c, nil
 }
 
@@ -485,6 +497,18 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request, ps httprouter.Para
 	}
 
 	c.Secret = ""
+	h.r.Writer().Write(w, r, c)
+}
+
+func (h *Handler) GetClientSecret(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+	var id = ps.ByName("id")
+
+	c, err := h.r.ClientManager().GetClientSecret(r.Context(), id)
+	if err != nil {
+		h.r.Writer().WriteError(w, r, err)
+		return
+	}
+
 	h.r.Writer().Write(w, r, c)
 }
 

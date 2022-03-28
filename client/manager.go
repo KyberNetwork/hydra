@@ -37,6 +37,9 @@ type Storage interface {
 
 	CreateClient(ctx context.Context, c *Client) error
 
+	CreateClientSecret(ctx context.Context, c *ClientSecret) error
+	GetClientSecret(ctx context.Context, clientID string) (*ClientSecret, error)
+
 	UpdateClient(ctx context.Context, c *Client) error
 
 	DeleteClient(ctx context.Context, id string) error
