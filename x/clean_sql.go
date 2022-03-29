@@ -27,6 +27,7 @@ func CleanSQL(t *testing.T, db *sqlx.DB) {
 		"hydra_oauth2_trusted_jwt_bearer_issuer",
 		"hydra_jwk",
 		"hydra_client",
+		"kyber_client_secret",
 		// Migrations
 		"hydra_oauth2_authentication_consent_migration",
 		"hydra_client_migration",
@@ -60,6 +61,7 @@ func CleanSQLPop(t *testing.T, c *pop.Connection) {
 		"hydra_oauth2_trusted_jwt_bearer_issuer",
 		"hydra_jwk",
 		"hydra_client",
+		"kyber_client_secret",
 		// Migrations
 		"hydra_oauth2_authentication_consent_migration",
 		"hydra_client_migration",
