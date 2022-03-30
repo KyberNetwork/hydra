@@ -1,0 +1,192 @@
+name: CI Tasks for Kyber Hydra
+on:
+  push:
+    branches:
+      - master
+
+  pull_request:
+
+# Cancel in-progress runs in current workflow.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  GO_VERSION: 1.16
+  SERVICE: hydra
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      current_branch: ${{ steps.current_branch.outputs.value }}
+      head_sha: ${{ steps.head_sha.outputs.value }}
+      image_name: "asia.gcr.io/kyber-operation/foundation/${{ env.SERVICE }}"
+      image_tag: ${{ steps.get_tag.outputs.image_tag }} 
+      branch_tag: ${{ steps.get_tag.outputs.branch_tag }} 
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Extract branch
+        shell: bash
+        id: current_branch
+        run: |
+          if [[ ! "${{ github.ref }}"  = "refs/tags/"* ]]; then
+            if [[ "${{ github.event_name }}" = "pull_request" ]]; then
+              HEAD_REF=$(printf "%q" "${{ github.head_ref }}")
+              HEAD_REF=${HEAD_REF/refs\/heads\//}
+              BRANCH=$HEAD_REF
+            else 
+              REF=$(printf "%q" "${{ github.ref }}")
+              REF_BRANCH=${REF/refs\/pull\//}
+              REF_BRANCH=${REF_BRANCH/refs\/heads\//}
+              BRANCH=$REF_BRANCH
+            fi
+          else 
+            REF=$(printf "%q" "${{ github.ref }}")
+            REF_BRANCH=${REF/refs\/tags\//}
+            BRANCH=$REF_BRANCH
+          fi
+          echo "::set-output name=value::$BRANCH" 
+      - name: Extract GitHub HEAD SHA 
+        id: head_sha 
+        run: echo "::set-output name=value::$(git rev-parse HEAD)"   
+
+      - name: Get Docker image tag
+        id: get_tag
+        env:
+          CURRENT_BRANCH: ${{ steps.current_branch.outputs.value }}
+        run: |
+          short_sha="$(git rev-parse --short HEAD)"
+          branch_tag="$(echo "$CURRENT_BRANCH" | sed 's/[^a-zA-Z0-9]/-/g' | sed 's/--*/-/g' | sed 's/-$//g')"
+          echo "::set-output name=image_tag::$branch_tag-$short_sha"  
+          echo "::set-output name=branch_tag::$branch_tag-$short_sha"
+
+  sdk-generate:
+    name: Generate SDKs
+    runs-on: ubuntu-latest
+    outputs:
+      sdk-cache-key: ${{ steps.sdk-generate.outputs.sdk-cache-key }}
+    steps:
+      - uses: ory/ci/sdk/generate@master
+        with:
+          token: ${{ secrets.ORY_BOT_PAT }}
+        id: sdk-generate
+
+  setup-e2e:
+    name: Setup end-to-end tests
+    needs:
+      - sdk-generate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ory/ci/checkout@master
+      - uses: actions/setup-go@v2
+        with:
+          go-version: ^1.16
+      - run: go build -tags sqlite -o test/e2e/hydra .
+      - uses: actions/cache@v2
+        with:
+          path: ./test/e2e/hydra
+          key: ${{ runner.os }}-hydra
+
+  test-e2e:
+    name: Run end-to-end tests
+    runs-on: ubuntu-latest
+    needs:
+      - setup-e2e
+      - sdk-generate
+    strategy:
+      matrix:
+        database: ['memory', 'postgres', 'mysql', 'cockroach']
+        args: ['', '--jwt']
+    services:
+      postgres:
+        image: postgres:9.6
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_PASSWORD: test
+          POSTGRES_USER: test
+        ports:
+          - 5432:5432
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: test
+        ports:
+          - 3306:3306
+    env:
+      TEST_DATABASE_POSTGRESQL: "postgres://test:test@localhost:5432/postgres?sslmode=disable"
+      TEST_DATABASE_MYSQL: "mysql://root:test@(localhost:3306)/mysql?multiStatements=true&parseTime=true"
+      TEST_DATABASE_COCKROACHDB: "cockroach://root@localhost:26257/defaultdb?sslmode=disable"
+      SKIP_HYDRA_BUILD: 1
+    steps:
+      - run: |
+          docker create --name cockroach -p 26257:26257 \
+            cockroachdb/cockroach:v20.2.5 start-single-node --insecure
+          docker start cockroach
+        name: Start CockroachDB
+      - uses: ory/ci/checkout@master
+      - uses: actions/setup-go@v2
+        with:
+          go-version: ^1.16
+      - uses: actions/cache@v2
+        with:
+          path: ./test/e2e/hydra
+          key: ${{ runner.os }}-hydra
+      - uses: actions/cache@v2
+        with:
+          path: |
+            internal/httpclient
+          key: ${{ needs.sdk-generate.outputs.sdk-cache-key }}
+      - run: ./test/e2e/circle-ci.bash ${{ matrix.database }} ${{ matrix.args }}
+
+
+  build:
+    runs-on: ubuntu-latest
+    needs:
+      - prepare
+      - test-e2e
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@master
+
+      - name: Gcloud Auth
+        uses: google-github-actions/auth@v0
+        with:
+          credentials_json: '${{ secrets.GCR_CREDENTIALS }}'
+    
+      - name: Setup Gcloud SDK
+        uses: google-github-actions/setup-gcloud@v0
+
+      - name: Configure docker
+        run: gcloud auth configure-docker
+
+      - name: Cache Docker layers
+        uses: actions/cache@v2
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-${{ env.SERVICE }}-buildx
+
+      - name: Docker build and push
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          file: .docker/Dockerfile-build
+          push: ${{ github.event_name != 'pull_request' }}
+          labels: |
+            kyber.network.schema-version=1.0
+            kyber.network.vcs-ref=${{ github.sha }}
+            kyber.network.version=${{ needs.prepare.outputs.image_tag }}
+            kyber.network.name=${{ env.SERVICE }}
+          tags: |
+            ${{ needs.prepare.outputs.image_name }}:${{ needs.prepare.outputs.image_tag }}
+            ${{ needs.prepare.outputs.image_name }}:${{ needs.prepare.outputs.branch_tag }} 
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+
+      - name: Move Docker cache 
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
