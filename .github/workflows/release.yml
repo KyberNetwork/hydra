@@ -120,4 +120,4 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ env.VERSION_TAG }}
           prerelease: false
-          name: "Auth Tenant ${{ env.VERSION_TAG }}"
+          name: "Hydra ${{ env.VERSION_TAG }}"
