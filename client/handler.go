@@ -68,7 +68,6 @@ func (h *Handler) SetRoutes(admin *x.RouterAdmin, public *x.RouterPublic) {
 	admin.PUT(ClientsHandlerPath+"/:id", h.Update)
 	admin.PATCH(ClientsHandlerPath+"/:id", h.Patch)
 	admin.DELETE(ClientsHandlerPath+"/:id", h.Delete)
-
 	admin.GET(ClientsHandlerPath+"/:id/secret", h.GetClientSecret)
 
 	if h.r.Config().PublicAllowDynamicRegistration() {
